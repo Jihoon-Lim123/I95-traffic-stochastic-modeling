@@ -33,17 +33,17 @@ The provided dataset contains **40 one-minute observations**, 10 for each period
 ## Repository files
 
 - [`I95_Traffic_Analysis.Rmd`](I95_Traffic_Analysis.Rmd) — analysis source, model explanations, code, and visualizations
-- [`traffic.xlsx`](traffic.xlsx) — input workbook, worksheet **`Traffic Data`**
+- [`traffic.csv`](traffic.csv) — input workbook
 - `README.md` — project overview and reproducibility instructions
 
 ## Reproduce the analysis
 
 1. Install **R** and **RStudio** (or another editor capable of rendering R Markdown).
-2. Open `I95_Traffic_Analysis.Rmd` in RStudio. Keep `traffic.xlsx` in the same working directory.
+2. Open `I95_Traffic_Analysis.Rmd` in RStudio. Keep `traffic.csv` in the same working directory.
 3. Install the required R packages (once):
 
    ```r
-   install.packages(c("rmarkdown", "readxl", "dplyr", "ggplot2", "knitr"))
+   install.packages(c("rmarkdown", "dplyr", "ggplot2", "knitr"))
    ```
 
 4. Set the working directory to the repository folder (e.g. open the repository as an RStudio Project, or use `setwd()`), and select **Knit** to produce an HTML report.
@@ -54,7 +54,7 @@ The provided dataset contains **40 one-minute observations**, 10 for each period
    rmarkdown::render("I95_Traffic_Analysis.Rmd")
    ```
 
-The report reads `traffic.xlsx` from the current working directory and uses its `Traffic Data` worksheet.
+The report reads `traffic.csv` from the current working directory (CSV version of the original Excel worksheet).
 
 ## Limitations
 
