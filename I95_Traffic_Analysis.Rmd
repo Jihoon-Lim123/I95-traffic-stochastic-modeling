@@ -14,7 +14,6 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
 ```{r libraries}
-library(readxl)
 library(dplyr)
 library(ggplot2)
 library(knitr)
@@ -39,18 +38,18 @@ The three models have different roles in the project. The Poisson process models
 ## 2.1 Load and Prepare the Data
 
 ```{r load-data}
-# This code automatically checks several possible Excel file names.
+# Read the CSV export of the original Excel traffic worksheet.
 possible_files <- c(
-  "traffic.xlsx"
+  "traffic.csv"
 )
 
 data_file <- possible_files[file.exists(possible_files)][1]
 
 if (is.na(data_file)) {
-  stop("Excel data file was not found. Put the Excel file in the same folder as this Rmd file.")
+  stop("Traffic CSV data file was not found. Put traffic.csv in the same folder as this Rmd file.")
 }
 
-traffic <- read_excel(data_file, sheet = "Traffic Data")
+traffic <- read.csv(data_file, stringsAsFactors = FALSE)
 
 traffic <- traffic %>%
   mutate(
