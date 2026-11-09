@@ -1,0 +1,386 @@
+---
+title: "Modeling I-95 Traffic Using Stochastic Probability Models"
+author: "Jihoon Lim, Achyutha Duddebanda, Andrew Gaiano"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r libraries}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+# 1. Introduction
+
+Traffic flow on a major highway such as I-95 can be viewed as a stochastic process because the number of vehicles passing a point changes randomly over time. The purpose of this project is to model short-term I-95 traffic observations using probability models covered in STAT422.
+
+This project focuses on three main questions:
+
+1. How can vehicle arrivals per minute be modeled using a Poisson process?
+2. How do traffic conditions transition between low, medium, and high states over time?
+3. How can truck traffic proportions be modeled using a hierarchical binomial framework?
+
+The dataset used in this project contains minute-by-minute observations of cars, trucks, and total vehicles during four traffic periods: Saturday AM, Saturday PM, Monday AM, and Monday PM.
+
+The three models have different roles in the project. The Poisson process models traffic volume, the Markov chain models traffic dynamics over time, and the hierarchical binomial model analyzes traffic composition.
+
+# 2. Analysis and Visualizations
+
+## 2.1 Load and Prepare the Data
+
+```{r load-data}
+# This code automatically checks several possible Excel file names.
+possible_files <- c(
+  "traffic.xlsx"
+)
+
+data_file <- possible_files[file.exists(possible_files)][1]
+
+if (is.na(data_file)) {
+  stop("Excel data file was not found. Put the Excel file in the same folder as this Rmd file.")
+}
+
+traffic <- read_excel(data_file, sheet = "Traffic Data")
+
+traffic <- traffic %>%
+  mutate(
+    Period = paste(Day, Time),
+    Period = factor(
+      Period,
+      levels = c("Saturday AM", "Saturday PM", "Monday AM", "Monday PM")
+    )
+  )
+
+kable(head(traffic), caption = "First few rows of the I-95 traffic dataset")
+```
+
+## 2.2 Exploratory Summary
+
+```{r summary-table}
+traffic_summary <- traffic %>%
+  group_by(Period) %>%
+  summarize(
+    Mean_Total = mean(Total),
+    Variance_Total = var(Total),
+    Mean_Cars = mean(Cars),
+    Mean_Trucks = mean(Trucks),
+    Total_Vehicles = sum(Total),
+    Total_Trucks = sum(Trucks),
+    Truck_Proportion = Total_Trucks / Total_Vehicles,
+    .groups = "drop"
+  )
+
+kable(traffic_summary, digits = 3, caption = "Traffic summary by observation period")
+```
+
+```{r total-traffic-plot}
+ggplot(traffic, aes(x = Minute, y = Total, group = Period)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~Period) +
+  labs(
+    title = "Total Vehicles Per Minute by Period",
+    x = "Minute",
+    y = "Total Vehicles"
+  ) +
+  theme_minimal()
+```
+
+## 2.3 Model 1: Poisson Process for Vehicle Arrivals
+
+The first model focuses on traffic volume. Let \(N(t)\) represent the number of vehicles observed during a time interval of length \(t\). A Poisson process is appropriate for modeling random arrivals over time.
+
+For a Poisson process,
+
+\[
+P(N(t)=k)=\frac{(\lambda t)^k e^{-\lambda t}}{k!},
+\]
+
+where \(\lambda\) is the average arrival rate. Since each observation in this dataset represents one minute, we estimate \(\lambda\) using the average number of vehicles per minute.
+
+```{r poisson-estimates}
+poisson_summary <- traffic %>%
+  group_by(Period) %>%
+  summarize(
+    lambda_hat = mean(Total),
+    variance_total = var(Total),
+    difference_variance_mean = variance_total - lambda_hat,
+    .groups = "drop"
+  )
+
+kable(poisson_summary, digits = 3, caption = "Estimated Poisson arrival rates by period")
+```
+
+```{r poisson-plot}
+ggplot(poisson_summary, aes(x = Period, y = lambda_hat)) +
+  geom_col() +
+  labs(
+    title = "Estimated Poisson Arrival Rate by Period",
+    x = "Period",
+    y = "Estimated Lambda: Vehicles per Minute"
+  ) +
+  theme_minimal()
+```
+
+The Poisson model shows how traffic intensity changes across observation periods. A larger \(\lambda\) means that more vehicles are expected to arrive per minute. In this dataset, Monday PM has the highest estimated arrival rate, suggesting the heaviest observed traffic volume.
+
+To evaluate whether the Poisson model is reasonable, we compared the observed distribution of vehicle counts with the expected Poisson distribution for each period.
+
+```{r poisson-observed-expected}
+poisson_compare <- traffic %>%
+  group_by(Period, Total) %>%
+  summarize(Observed = n(), .groups = "drop") %>%
+  left_join(poisson_summary, by = "Period") %>%
+  group_by(Period) %>%
+  mutate(
+    Number_of_Minutes = sum(Observed),
+    Expected = dpois(Total, lambda = lambda_hat) * Number_of_Minutes
+  ) %>%
+  ungroup()
+
+kable(head(poisson_compare, 12), digits = 3,
+      caption = "Observed and expected vehicle-count frequencies under the Poisson model")
+```
+
+```{r poisson-observed-expected-plot}
+ggplot(poisson_compare, aes(x = Total)) +
+  geom_col(aes(y = Observed), alpha = 0.7) +
+  geom_point(aes(y = Expected), size = 2) +
+  geom_line(aes(y = Expected, group = Period), linewidth = 1) +
+  facet_wrap(~Period, scales = "free_x") +
+  labs(
+    title = "Observed Vehicle Counts Compared with Poisson Expected Counts",
+    x = "Vehicles per Minute",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+```
+
+This comparison shows what the Poisson model contributes to the project. It does not simply calculate an average; it gives a probability model for short-term vehicle arrivals. When observed counts are close to the expected Poisson pattern, the model provides a reasonable approximation. When the observed counts deviate from the Poisson pattern, this may indicate changing traffic intensity, congestion effects, or dependence across time.
+
+This connects naturally to the Markov chain model in the next section. The Poisson model treats arrivals as random counts, while the Markov chain examines whether traffic conditions persist or change from one minute to the next.
+
+## 2.4 Model 2: Markov Chain for Traffic States
+
+A Poisson process models the number of vehicle arrivals, but it does not directly describe how traffic conditions move from one state to another. To study traffic dynamics, we also modeled traffic conditions as a discrete-time Markov chain.
+
+Each minute was classified into one of three traffic states:
+
+- Low traffic
+- Medium traffic
+- High traffic
+
+Instead of choosing arbitrary cutoffs, we used quantile-based thresholds from the observed total vehicle counts. This makes the traffic states reflect the actual distribution of this dataset.
+
+```{r traffic-state-definition}
+# Quantile-based thresholds for Low, Medium, and High traffic states
+q <- quantile(traffic$Total, probs = c(0, 0.33, 0.67, 1), na.rm = TRUE)
+q[1] <- q[1] - 0.001
+q[4] <- q[4] + 0.001
+
+traffic <- traffic %>%
+  mutate(
+    State = cut(
+      Total,
+      breaks = q,
+      labels = c("Low", "Medium", "High"),
+      include.lowest = TRUE
+    ),
+    State = factor(State, levels = c("Low", "Medium", "High"), ordered = TRUE)
+  )
+
+kable(
+  traffic %>% count(Period, State),
+  caption = "Number of observations in each traffic state"
+)
+```
+
+Under the Markov assumption, the next traffic state depends only on the current traffic state, not on the full history before it:
+
+\[
+P(X_{t+1}=j \mid X_t=i, X_{t-1}, \ldots, X_0)=P(X_{t+1}=j \mid X_t=i).
+\]
+
+We estimated the transition probabilities by counting observed transitions from one minute to the next within the same traffic period.
+
+```{r transition-matrix}
+states <- c("Low", "Medium", "High")
+
+transitions <- traffic %>%
+  arrange(Period, Minute) %>%
+  group_by(Period) %>%
+  mutate(Next_State = lead(State)) %>%
+  ungroup() %>%
+  filter(!is.na(Next_State)) %>%
+  count(State, Next_State)
+
+transition_counts <- matrix(
+  0,
+  nrow = length(states),
+  ncol = length(states),
+  dimnames = list(Current_State = states, Next_State = states)
+)
+
+for (i in seq_len(nrow(transitions))) {
+  transition_counts[
+    as.character(transitions$State[i]),
+    as.character(transitions$Next_State[i])
+  ] <- transitions$n[i]
+}
+
+transition_matrix <- prop.table(transition_counts, margin = 1)
+transition_matrix[is.na(transition_matrix)] <- 0
+
+kable(transition_counts, caption = "Observed transition counts")
+kable(round(transition_matrix, 3), caption = "Estimated Markov transition probability matrix")
+```
+
+```{r markov-visualization}
+ggplot(traffic,
+       aes(x = Minute,
+           y = State,
+           color = State,
+           group = 1)) +
+  geom_step(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~Period) +
+  labs(
+    title = "Traffic State Transitions Over Time",
+    x = "Minute",
+    y = "Traffic State"
+  ) +
+  theme_minimal()
+```
+
+The transition matrix shows the probability of moving from each current traffic state to each next traffic state. For example, a large probability in the High-to-High entry would suggest that congestion tends to persist once traffic reaches a high state.
+
+After estimating the transition matrix, we examined the long-run behavior of the Markov chain. The stationary distribution represents the traffic-state probabilities that the system would approach if the same transition pattern continued over time.
+
+```{r stationary-distribution}
+# Compute stationary distribution by repeatedly multiplying the transition matrix.
+# This avoids needing an extra Markov chain package.
+stationary <- rep(1 / length(states), length(states))
+
+for (i in 1:1000) {
+  stationary <- as.numeric(stationary %*% transition_matrix)
+}
+
+stationary_df <- data.frame(
+  State = states,
+  Long_Run_Probability = stationary
+)
+
+kable(stationary_df, digits = 4,
+      caption = "Estimated long-run traffic state probabilities")
+```
+
+```{r stationary-plot}
+ggplot(stationary_df,
+       aes(x = State, y = Long_Run_Probability)) +
+  geom_col() +
+  labs(
+    title = "Estimated Long-Run Traffic State Distribution",
+    x = "Traffic State",
+    y = "Long-Run Probability"
+  ) +
+  theme_minimal()
+```
+
+The stationary distribution gives the Markov chain analysis a clear interpretation beyond the transition matrix. In this context, it estimates the long-run proportion of time that I-95 traffic would spend in Low, Medium, or High traffic states if the observed transition pattern continued. If the High state has a relatively large long-run probability, this suggests that congestion is not only a temporary spike but a persistent traffic condition.
+
+## 2.5 Model 3: Hierarchical Binomial Model for Truck Traffic
+
+The third model analyzes traffic composition rather than traffic volume. The Poisson model tells us how many vehicles arrive, and the Markov chain tells us how traffic states change over time. The hierarchical binomial model tells us what type of traffic is present by focusing on the truck proportion.
+
+A simple binomial model would assume one fixed truck probability for the entire dataset. However, this is too restrictive because truck traffic is likely different between weekday and weekend periods.
+
+Instead, we used a hierarchical binomial framework. Let \(X_i\) be the number of trucks observed in period \(i\), and let \(n_i\) be the total number of vehicles observed in that period. Then
+
+\[
+X_i \mid p_i \sim \text{Binomial}(n_i,p_i),
+\]
+
+where \(p_i\) is the period-specific probability that a randomly selected vehicle is a truck.
+
+To represent variation across periods, we assume each period-specific truck probability comes from a common beta distribution:
+
+\[
+p_i \sim \text{Beta}(\alpha,\beta).
+\]
+
+This creates a hierarchical model because the observed truck counts depend on period-specific probabilities, while those probabilities are connected through a shared population-level distribution.
+
+```{r hierarchical-binomial-model}
+binomial_summary <- traffic %>%
+  group_by(Period) %>%
+  summarize(
+    Total_Vehicles = sum(Total),
+    Total_Trucks = sum(Trucks),
+    Raw_p_hat = Total_Trucks / Total_Vehicles,
+    .groups = "drop"
+  )
+
+# Empirical Bayes-style prior centered at the overall truck proportion.
+# The prior strength controls how strongly each period is shrunk toward the overall mean.
+overall_p <- sum(binomial_summary$Total_Trucks) / sum(binomial_summary$Total_Vehicles)
+prior_strength <- 20
+alpha <- overall_p * prior_strength
+beta <- (1 - overall_p) * prior_strength
+
+binomial_summary <- binomial_summary %>%
+  mutate(
+    Posterior_Alpha = alpha + Total_Trucks,
+    Posterior_Beta = beta + Total_Vehicles - Total_Trucks,
+    Posterior_Mean = Posterior_Alpha / (Posterior_Alpha + Posterior_Beta),
+    Lower_95 = qbeta(0.025, Posterior_Alpha, Posterior_Beta),
+    Upper_95 = qbeta(0.975, Posterior_Alpha, Posterior_Beta)
+  )
+
+kable(binomial_summary, digits = 4,
+      caption = "Hierarchical binomial estimates of truck proportions by period")
+```
+
+```{r hierarchical-binomial-plot}
+ggplot(binomial_summary,
+       aes(x = Period, y = Posterior_Mean)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = Lower_95, ymax = Upper_95), width = 0.15) +
+  labs(
+    title = "Hierarchical Binomial Estimates of Truck Proportion",
+    x = "Period",
+    y = "Estimated Truck Proportion"
+  ) +
+  theme_minimal()
+```
+
+The hierarchical binomial model contributes a different type of insight from the Poisson and Markov models. It shows whether the composition of traffic changes across periods. In this project, a higher estimated truck proportion during weekday periods would suggest that weekday traffic is not only heavier but also compositionally different, with more commercial vehicle activity.
+
+Compared with a simple binomial model, the hierarchical version is more appropriate because it allows each period to have its own truck probability while still connecting the periods through a common probabilistic structure.
+
+# 3. Conclusions
+
+This project modeled I-95 traffic using three probability models from STAT422.
+
+First, the Poisson process model was used to describe vehicle arrivals per minute. This model showed differences in traffic volume across periods by estimating the arrival rate \(\lambda\). The observed-versus-expected comparison also helped evaluate whether the Poisson model was a reasonable approximation for the traffic counts.
+
+Second, the Markov chain model was used to describe transitions among low, medium, and high traffic states. The transition matrix showed how traffic conditions moved from one state to another, while the stationary distribution estimated the long-run proportion of time spent in each traffic state.
+
+Third, the hierarchical binomial model was used to analyze truck proportions. This model showed that traffic composition may differ by period, especially between weekday and weekend observations.
+
+Overall, the results suggest that I-95 traffic can be viewed as a stochastic system involving random vehicle arrivals, dynamic traffic-state transitions, and changing vehicle composition.
+
+# 4. Future Work
+
+There are several ways this project could be extended. First, a larger dataset collected over more days and longer time intervals would make the estimated models more reliable. Second, future analysis could separate weekdays, weekends, rush hours, and non-rush hours more carefully. Third, additional variables such as weather, accidents, road construction, or holidays could be included to explain changes in traffic intensity.
+
+A more advanced version of this project could also compare homogeneous and non-homogeneous Poisson processes, where the arrival rate changes over time instead of remaining constant within each period.
